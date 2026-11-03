@@ -269,9 +269,9 @@ async fn main() -> Result<()> {
     tracing::info!(%address, "Global Frontend listening");
     if let Some((relay_listener, catalog)) = receiving {
         let http = async {
-            let result = serve(listener, app, shutdown.clone()).await;
+            serve(listener, app, shutdown.clone()).await;
             shutdown.cancel();
-            result.context("serve the Global Frontend")
+            Ok::<(), anyhow::Error>(())
         };
         let relay = async {
             let result = serve_relay_views(relay_listener, catalog, shutdown.clone()).await;
@@ -281,9 +281,8 @@ async fn main() -> Result<()> {
         tokio::try_join!(http, relay)?;
         Ok(())
     } else {
-        serve(listener, app, shutdown)
-            .await
-            .context("serve the Global Frontend")
+        serve(listener, app, shutdown).await;
+        Ok(())
     }
 }
 
