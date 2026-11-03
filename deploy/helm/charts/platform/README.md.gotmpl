@@ -48,6 +48,24 @@ versions, see the [compatibility matrix](#kai-scheduler-and-grove-configuration)
 
 ### v1.7.0
 
+#### DGDR v1beta2 API Breaking Changes
+
+**Change:** Request and Run `spec.aisimulate` is renamed to `spec.aisim`, and Run
+`status.aisimulate` is renamed to `status.aisim`. The old field names are no longer
+in the CRD schemas; they have no compatibility alias or automatic migration.
+
+**Affected:** DGDR v1beta2 manifests, stored Requests and Runs, and clients reading
+Run status, including v1beta2 payloads carried through older API versions.
+
+**Action:** Finish active Runs before upgrading the CRDs and operator. Update
+manifests to `spec.aisim.inputOverrides` and status readers to `status.aisim.input`.
+Recreate Requests and immutable Runs that need to retain overrides stored under
+the old name. Do not rely on unknown-field pruning to migrate those values.
+
+**Existing deployments:** Applied DGDs are unchanged. The optional field, merge
+patch precedence, typed defaults, and operator-owned execution fields keep their
+existing semantics. The AISimulate package and CLI names are unchanged.
+
 #### Runtime Compatibility
 
 ##### Frontend Startup Probe Defaults
