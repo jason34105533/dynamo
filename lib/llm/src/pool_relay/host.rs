@@ -23,7 +23,9 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "ckf-diagnostics")]
 use std::sync::atomic::Ordering;
 
-use dynamo_global_discovery_client::{Freshness, GlobalDiscoveryClient, RouterCache, RouterReplica};
+use dynamo_global_discovery_client::{
+    Freshness, GlobalDiscoveryClient, RouterCache, RouterReplica,
+};
 use dynamo_kv_router::identity::PoolId;
 use dynamo_kv_router::indexer::cuckoo::{CkfConfig, CkfFailureAction};
 use dynamo_kv_router::protocols::{DpRank, KvCacheEventError, SchedulerLoad, WorkerId};
@@ -835,7 +837,11 @@ impl PoolRelay {
         );
         // Started last, so a failed start leaves no poll task running.
         let global_routers = discovery_client.map(|client| {
-            RouterCache::spawn(client, GLOBAL_ROUTERS_REFRESH_INTERVAL, cancel.child_token())
+            RouterCache::spawn(
+                client,
+                GLOBAL_ROUTERS_REFRESH_INTERVAL,
+                cancel.child_token(),
+            )
         });
         if let (Some(pool), Some(transport), Some(routers)) = (
             config.routing_pool,
