@@ -961,8 +961,12 @@ async fn pass_boundary_waits_for_gated_route_delivery_before_id_reuse() {
 #[tokio::test]
 async fn full_output_stream_is_cancelled_without_stalling_an_unrelated_request() {
     let fpm = Arc::new(CountingFpmSink::default());
+
+    // Keep both requests eligible for the same pass so the count detects cancellation lag.
+    let mut config = args(EngineType::Vllm);
+    config.async_scheduling = Some(false);
     let engine = LiveEngine::start_with_options(
-        args(EngineType::Vllm),
+        config,
         0,
         LiveEngineOptions {
             request_output_buffering: RequestOutputBuffering::CancelOnOverflow {
