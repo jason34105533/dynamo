@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "ckf-diagnostics")]
 use std::sync::atomic::Ordering;
 
-use dynamo_global_discovery_client::{GlobalDiscoveryClient, RouterReplica};
+use dynamo_global_discovery_client::{Freshness, GlobalDiscoveryClient, RouterCache, RouterReplica};
 use dynamo_kv_router::identity::PoolId;
 use dynamo_kv_router::indexer::cuckoo::{CkfConfig, CkfFailureAction};
 use dynamo_kv_router::protocols::{DpRank, KvCacheEventError, SchedulerLoad, WorkerId};
@@ -45,7 +45,6 @@ use super::discovery::{
     DcMembershipView, EndpointMembership, KvCacheDomainKey, MaterializationConflict,
     MaterializationConflictSubject,
 };
-use super::global_routers::{GLOBAL_DISCOVERY_INTERVAL, GlobalRouters, poll_global_routers};
 use super::identity::{
     CanonicalModelRegistration, PoolCatalogSnapshot, PoolRelayIdentity, WorkerRole,
 };
@@ -85,6 +84,8 @@ pub const DEFAULT_EXPECTED_UNIQUE_BLOCKS: usize = 1_048_576;
 const DEFAULT_RECOVERY_FETCH_CONCURRENCY: usize = 16;
 const DEFAULT_PUBLICATION_THRESHOLD: usize = 16;
 const DEFAULT_PUBLICATION_DELAY: Duration = Duration::from_millis(1);
+const GLOBAL_ROUTERS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const GLOBAL_DISCOVERY_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn validate_publication_capacity(expected_unique_blocks: usize) -> anyhow::Result<()> {
     anyhow::ensure!(
@@ -650,7 +651,7 @@ pub struct PoolRelay {
     transport: Option<GrpcTransport>,
     /// Serving-load aggregator feeding the transport; runs only with it.
     serving_load_aggregator: Mutex<Option<JoinHandle<()>>>,
-    global_routers: Option<GlobalRouters>,
+    global_routers: Option<RouterCache>,
 }
 
 impl PoolRelay {
@@ -700,7 +701,7 @@ impl PoolRelay {
         let discovery_client = config
             .global_discovery_url
             .clone()
-            .map(|url| GlobalDiscoveryClient::new(url, GLOBAL_DISCOVERY_INTERVAL))
+            .map(|url| GlobalDiscoveryClient::new(url, GLOBAL_DISCOVERY_REQUEST_TIMEOUT))
             .transpose()?;
         let publication = ActorPublicationConfig {
             threshold: config.producer.publication_threshold,
@@ -834,7 +835,7 @@ impl PoolRelay {
         );
         // Started last, so a failed start leaves no poll task running.
         let global_routers = discovery_client.map(|client| {
-            poll_global_routers(client, GLOBAL_DISCOVERY_INTERVAL, cancel.child_token())
+            RouterCache::spawn(client, GLOBAL_ROUTERS_REFRESH_INTERVAL, cancel.child_token())
         });
         if let (Some(pool), Some(transport), Some(routers)) = (
             config.routing_pool,
@@ -865,7 +866,7 @@ impl PoolRelay {
     /// The Global Router replicas listed by the Global Discovery Service, or
     /// `None` without a Global Discovery URL.
     pub fn subscribe_global_routers(&self) -> Option<watch::Receiver<HashSet<RouterReplica>>> {
-        self.global_routers.as_ref().map(GlobalRouters::subscribe)
+        self.global_routers.as_ref().map(RouterCache::subscribe)
     }
 
     pub fn pool_catalog(&self) -> PoolCatalogSnapshot {
@@ -1025,10 +1026,13 @@ impl PoolRelay {
                 .map(|address| address.to_string()),
             wan_last_error: transport_health.last_error,
             global_discovery_enabled: self.global_routers.is_some(),
-            global_routers_stale_reason: self
-                .global_routers
-                .as_ref()
-                .and_then(GlobalRouters::stale_reason),
+            global_routers_stale_reason: self.global_routers.as_ref().and_then(|routers| {
+                match routers.freshness() {
+                    Freshness::Unread => Some("no successful read yet".to_owned()),
+                    Freshness::Current => None,
+                    Freshness::Stale(reason) => Some(reason),
+                }
+            }),
         }
     }
 
@@ -2689,7 +2693,6 @@ mod tests {
     };
 
     use super::super::actor::ActorFaultCategory;
-    use super::super::global_routers::NO_SUCCESSFUL_READ;
     use super::*;
     use crate::discovery::{KvEventSource, KvSourceMembership};
 
@@ -3187,20 +3190,29 @@ mod tests {
 
         // Nothing serves this URL, so the first read fails and the router list
         // stays empty.
+        let unused = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
         let relay = PoolRelay::start(
             component,
             "test-dc".to_string(),
             PoolRelayConfig {
-                global_discovery_url: Some("http://127.0.0.1:9/".parse().unwrap()),
+                global_discovery_url: Some(format!("http://{unused}/").parse().unwrap()),
                 ..PoolRelayConfig::default()
             },
         )
         .await
         .unwrap();
+        let failed = format!("request to http://{unused}/routers failed: ");
         let health = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let health = relay.health().await;
-                if health.global_routers_stale_reason.as_deref() != Some(NO_SUCCESSFUL_READ) {
+                if health
+                    .global_routers_stale_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("/routers"))
+                {
                     return health;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -3209,8 +3221,12 @@ mod tests {
         .await
         .expect("the first read did not finish");
         assert!(health.global_discovery_enabled);
-        let reason = health.global_routers_stale_reason.unwrap();
-        assert!(reason.contains("http://127.0.0.1:9/routers"), "{reason}");
+        // The reason carries the cause, not only the failed request.
+        let reason = health.global_routers_stale_reason.as_deref().unwrap();
+        assert!(
+            reason.starts_with(&failed) && reason.len() > failed.len(),
+            "{reason}"
+        );
         assert!(health.healthy);
         let mut routers = relay.subscribe_global_routers().unwrap();
         assert!(routers.borrow().is_empty());

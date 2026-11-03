@@ -7,7 +7,6 @@ pub use dynamo_global_common::PoolKey as RoutingPoolKey;
 
 mod actor;
 mod discovery;
-mod global_routers;
 mod host;
 mod identity;
 mod load;
