@@ -109,6 +109,7 @@ def test_telemetry_capture_callback_and_jsonl_share_one_sample_stream(
         "decode_scheduler_metrics",
         "prefill_interval_metrics",
         "decode_interval_metrics",
+        "host_caches",
         "router_pending_prefill_requests",
         "router_pending_decode_requests",
         "active_prefill_ids",
